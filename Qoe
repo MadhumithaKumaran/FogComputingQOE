@@ -1,0 +1,1430 @@
+package org.fog.test.perfeval; 
+
+#PACKAGE FOR JAVA 
+
+import java.util.ArrayList; 
+
+import java.util.Calendar; 
+
+import java.util.HashMap; 
+
+import java.util.LinkedList; 
+
+import java.util.List; 
+
+import java.util.Map; 
+
+import java.util.Random; 
+
+import java.util.TreeMap; 
+
+import java.lang.Double; 
+
+#PACKAGE FOR CLOUDSIM 
+
+import org.cloudbus.cloudsim.Host; 
+
+import org.cloudbus.cloudsim.Log; 
+
+import org.cloudbus.cloudsim.Pe; 
+
+import org.cloudbus.cloudsim.Storage; 
+
+import org.cloudbus.cloudsim.core.CloudSim; 
+
+import org.cloudbus.cloudsim.power.PowerHost; 
+
+import org.cloudbus.cloudsim.provisioners.RamProvisionerSimple; 
+
+import org.cloudbus.cloudsim.sdn.overbooking.BwProvisionerOverbooking; 
+
+import org.cloudbus.cloudsim.sdn.overbooking.PeProvisionerOverbooking; 
+
+#PACKAGE FOR FOGSIM 
+
+import org.fog.application.AppEdge; 
+
+import org.fog.application.AppLoop; 
+
+import org.fog.application.Application; 
+
+import org.fog.application.selectivity.FractionalSelectivity; 
+
+import org.fog.entities.Actuator; 
+
+import org.fog.entities.FogBroker; 
+
+import org.fog.entities.FogDevice; 
+
+import org.fog.entities.FogDeviceCharacteristics; 
+
+import org.fog.entities.Sensor; 
+
+import org.fog.entities.Tuple; 
+
+import org.fog.placement.Controller; 
+
+import org.fog.placement.ModuleMapping; 
+
+import org.fog.policy.AppModuleAllocationPolicy; 
+
+import org.fog.scheduler.StreamOperatorScheduler; 
+
+import org.fog.utils.FogLinearPowerModel; 
+
+import org.fog.utils.FogUtils; 
+
+import org.fog.utils.TimeKeeper; 
+
+import org.fog.utils.distribution.DeterministicDistribution; 
+
+//simulation setup for health care 
+
+public class Qoe { 
+
+static List<FogDevice> fogDevices = new ArrayList<FogDevice>(); 
+
+static List<Sensor> sensors = new ArrayList<Sensor>(); 
+
+static List<Actuator> actuators = new ArrayList<Actuator>(); 
+
+private static boolean CLOUD = false; 
+
+static Map<String, Integer> getIdByName = new HashMap<String, Integer>(); 
+
+int rank[]=new int[5]; 
+
+static double sensingInterval = 2;  // sensing interval for the sensor is 2ms 
+
+static HashMap<Integer,HashMap<Integer, ArrayList<Integer>>> customer_requests=new HashMap<>();                              // customer id -----> (service id, resource_requested) 
+
+static HashMap<Integer,Double> services=new HashMap<>();// service id -----------> overall nps 
+
+static HashMap<Integer,HashMap<Integer,Double>> customernps=new HashMap<>();// customer id -----------> service id, customer nps 
+
+static HashMap<String,HashMap<Integer,HashMap<Integer, ArrayList<Integer>>>> fognodeRequestMapping=new HashMap<>(); 
+
+static HashMap<String, ArrayList<Integer>> fognodescapacity=new HashMap<>();//fog nodes capacity 
+
+public static void main(String[] args) { 
+
+Log.printLine("QOE Resource Allocation method"); 
+
+try { 
+
+Log.disable(); 
+
+int num_user = 1000; // number of users 
+
+Calendar calendar = Calendar.getInstance(); 
+
+boolean trace_flag = false; 
+
+CloudSim.init(num_user, calendar, trace_flag); 
+
+String appId = "qoe"; 
+
+FogBroker broker = new FogBroker("broker"); 
+
+Application application = createApplication(appId, broker.getId()); 
+
+application.setUserId(broker.getId()); 
+
+createFogDevices(broker.getId(), appId); 
+
+Controller controller = null; 
+
+ModuleMapping moduleMapping = ModuleMapping.createModuleMapping(); 
+
+//creating 5 fog servers 
+
+moduleMapping.addModuleToDevice("clientModule","fogserver1"); //fixing instances of client module in //the fogserver1 
+
+moduleMapping.addModuleToDevice("clientModule","fogserver2");//fixing instances of client module in //the fogserver2 
+
+moduleMapping.addModuleToDevice("clientModule","fogserver3");//fixing instances of client module in //the fogserver3 
+
+moduleMapping.addModuleToDevice("clientModule","fogserver4");//fixing instances of client module in //the fogserver4 
+
+moduleMapping.addModuleToDevice("clientModule","fogserver5");//fixing instances of client module in //the fogserver5 
+
+controller = new Controller("QOE-controller", fogDevices, sensors,actuators); 
+
+TimeKeeper.getInstance().setSimulationStartTime(Calendar.getInstance().getTimeInMillis()); 
+
+assignNPSValues(); 
+
+System.out.println("-----------------------------------------------------------"); 
+
+System.out.println("NPS ratio calculations :"); 
+
+HashMap<Integer,HashMap<Integer,Double>> npsratios=npsRatiocalculations(); 
+
+for(Map.Entry<Integer,HashMap<Integer,Double>> npsratio:npsratios.entrySet()){ 
+
+System.out.println("customer id  :"+npsratio.getKey()); 
+
+for(Map.Entry<Integer,Double> nps:npsratio.getValue().entrySet()){ 
+
+System.out.println("service id :"+nps.getKey()); 
+
+System.out.println("nps ratio :"+nps.getValue());}} 
+
+System.out.println("---------------------------------------------------------------------------------------"); 
+
+System.out.println("QOE Ratio Estimation algorithm"); 
+
+QOERatioEstimationalgm(); 
+
+System.out.println("---------------------------------------------------------------------------------------"); 
+
+System.out.println("NPS :"); 
+
+calculateNPS(); 
+
+Log.printLine("finished!");} 
+
+catch (Exception e) { 
+
+e.printStackTrace(); 
+
+Log.printLine("Unwanted errors happen");}} 
+
+#CALCULATION FOR NPS 
+
+//calculating NPS using NPS promoter score and distractor score 
+
+private static void calculateNPS(){ 
+
+int nps_pr,nps_dist; 
+
+System.out.println("NPS is calculated as follows.... (NPS(promoters)-NPS(distractors)"); 
+
+for(Map.Entry<Integer,Double> service:services.entrySet()){ 
+
+int sid=service.getKey(); 
+
+nps_pr=0; 
+
+nps_dist=0; 
+
+for(Map.Entry<Integer,HashMap<Integer,Double>> entry:customernps.entrySet()){ 
+
+HashMap<Integer,Double> value=entry.getValue(); 
+
+double cust_nps=0.0; 
+
+if(value.containsKey(sid)){ 
+
+cust_nps=value.get(sid);} 
+
+if(Double.compare(cust_nps,999.0)!=0) { 
+
+if(cust_nps>8){  //greater than 8 hence promoter  
+
+nps_pr+=cust_nps;} 
+
+else if(cust_nps<=6){ // less than 6 hence distractor 
+
+nps_dist+=cust_nps;}}} 
+
+System.out.println("NPS for service "+sid+" is :"+(nps_pr-nps_dist)); //NPS is calculated by subtracting distractor NPS from promoter NPS. }} 
+
+# FOG NODE RANK CALCULATION 
+
+private static void computeRank(){ 
+
+double m[]=new double[5]; 
+
+double delay[]={0.0004,0.0003,0.0007,0.0009,0.0003}; // assigning values for delay factor 
+
+double jitter[]={0.0003,0.0004,0.0007,0.0007,0.0009}; // assigning values for jitter factor 
+
+double latency[]={0.0002,0.0004,0.0006,0.0008,0.0002}; // assigning values for latency factor 
+
+double pktloss[]={0.05,0.06,0.05,0.07,0.07};// assigning values for packet loss factor 
+
+double blockingprobability[]={4,4,3,2,1};// assigning values for blocking probability factor 
+
+//object for fognodefactors which extends FogDevice class 
+
+FognodeFactors f[]=new FognodeFactors[5]; 
+
+for(int i=0;i<5;i++){ 
+
+f[i]=new FognodeFactors(delay[i],jitter[i],latency[i],pktloss[i],blockingprobability[i]);} 
+
+for(int i=0;i<5;i++){ 
+
+delay[i]=f[i].delay;} 
+
+int rankdelay[]=f.rank(m.length,delay); 
+
+for(int i=0;i<5;i++){ 
+
+jitter[i]=f[i].jitter;} 
+
+int rankjitter[]=f.rank(m.length,jitter); 
+
+for(int i=0;i<5;i++){ 
+
+latency[i]=f[i].latency;} 
+
+int ranklatency[]=f.rank(m.length,latency); 
+
+for(int i=0;i<5;i++){ 
+
+pktloss[i]=f[i].pktloss;} 
+
+int rankpktloss[]=f.rank(m.length,pktloss); 
+
+for(int i=0;i<5;i++){ 
+
+blockingprobability[i]=f[i].blockingprobability;} 
+
+int rankprob[]=f.rank(5,blockingprobability); 
+
+//*******************fognode rank********************** 
+
+System.out.println("--------------------------------------------------------"); 
+
+System.out.println("--------------------------------------------------------"); 
+
+double fogscore[]=new double[5]; 
+
+for(int i=0;i<5;i++){ 
+
+fogscore[i]=rankdelay[i]+rankjitter[i]+ranklatency[i]+rankpktloss[i]+rankprob[i];} 
+
+for(int i=0;i<5;i++){ 
+
+m[i]=fogscore[i];} 
+
+int rankfog[]=f.rank(m.length,fogscore); 
+
+for(int i=0;i<5;i++){ 
+
+System.out.println(" "); 
+
+System.out.println(" Fognode "+(i+1)); 
+
+System.out.println(" Score is :"+  (int)fogscore[i] +"    Rank is: "+rankfog[i]); 
+
+System.out.println(" ");} 
+
+System.out.println("--------------------------------------------------------"); 
+
+System.out.println("--------------------------------------------------------");} 
+
+private static double getDoubleValue(double min, double max){ //for random values 
+
+Random r = new Random();   
+
+double randomValue = min + (max - min) * r.nextDouble();   
+
+return randomValue;}   
+
+private static int getValue(int min, int max)  {  //for random values 
+
+Random r = new Random();   
+
+int randomValue = min + r.nextInt()%(max - min); 
+
+return randomValue;} 
+
+private static void createFogDevices(int userId, String appId) {// creating fog devices with heterogenous //configuration and in the physical topology of the simulation 
+
+FognodeFactors cloud = createFogDevice("cloud", 44800, 40000, 100, 10000, 0, 0.01, 16*103, 16*83.25); 
+
+cloud.setParentId(-1); 
+
+fogDevices.add(cloud); 
+
+for(int i=1;i<=5;i++){ 
+
+FognodeFactors device = createFogDevice("Fogserver-"+i, getValue(12000, 15000), getValue(4000, 8000), getValue(200, 300), getValue(500, 1000), 1, 0.01, getValue(100,120), getValue(70, 75));   
+
+device.setUplinkLatency(10);  //latency occurred while connecting fog server and cloud 
+
+device.setParentId(cloud.getId()); 
+
+fogDevices.add(device); 
+
+getIdByName.put(device.getName(), device.getId());} 
+
+FognodeFactors mobile= createFogDevice("mobile", 3200, 1000, 10000, 270, 2, 0, 87.53, 82.44); 
+
+mobile.setParentId(getIdByName.get("Fogserver-1")); 
+
+mobile.setUplinkLatency(10);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile); 
+
+getIdByName.put(mobile.getName(), mobile.getId()); 
+
+FognodeFactors mobile2= createFogDevice("mobile2", 3290, 1100, 11000, 120, 2, 0, 55.53, 88.44); 
+
+mobile2.setParentId(getIdByName.get("Fogserver-2")); 
+
+mobile2.setUplinkLatency(8);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile2); 
+
+getIdByName.put(mobile2.getName(), mobile2.getId()); 
+
+FognodeFactors mobile3= createFogDevice("mobile3", 2200, 1200, 8000, 340, 2, 0,88.53, 77.44); 
+
+mobile3.setParentId(getIdByName.get("Fogserver-3")); 
+
+mobile3.setUplinkLatency(3);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile3); 
+
+getIdByName.put(mobile3.getName(), mobile3.getId()); 
+
+FognodeFactors mobile4= createFogDevice("mobile4", 2700, 1000, 9000, 270, 2, 0, 87.53, 82.44); 
+
+mobile4.setParentId(getIdByName.get("Fogserver-4")); 
+
+mobile4.setUplinkLatency(9);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile4); 
+
+getIdByName.put(mobile4.getName(), mobile4.getId()); 
+
+FognodeFactors mobile5= createFogDevice("mobile5", 4000, 1000, 9000, 360, 2, 0, 78.53, 89.44); 
+
+mobile5.setParentId(getIdByName.get("Fogserver-5")); 
+
+mobile5.setUplinkLatency(16);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile5); 
+
+getIdByName.put(mobile5.getName(), mobile5.getId()); 
+
+FognodeFactors mobile6= createFogDevice("mobile6", 3400, 1400, 12000, 270, 2, 0, 77.53, 72.44); 
+
+mobile6.setParentId(getIdByName.get("Fogserver-1")); 
+
+mobile6.setUplinkLatency(13);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile6); 
+
+getIdByName.put(mobile6.getName(), mobile6.getId()); 
+
+FognodeFactors mobile7= createFogDevice("mobile7", 3200, 1000, 10000, 270, 2, 0, 87.53, 82.44); 
+
+mobile7.setParentId(getIdByName.get("Fogserver-1")); 
+
+mobile7.setUplinkLatency(12);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile7); 
+
+getIdByName.put(mobile7.getName(), mobile7.getId()); 
+
+FognodeFactors mobile8= createFogDevice("mobile8", 3400, 1400, 12000, 370, 2, 0, 71.53, 62.44); 
+
+mobile8.setParentId(getIdByName.get("Fogserver-3")); 
+
+mobile8.setUplinkLatency(5);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile8); 
+
+getIdByName.put(mobile8.getName(), mobile8.getId()); 
+
+FognodeFactors mobile9= createFogDevice("mobile9", 3200, 1000, 10000, 270, 2, 0, 87.53, 82.44); 
+
+mobile9.setParentId(getIdByName.get("Fogserver-4")); 
+
+mobile9.setUplinkLatency(5);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile9); 
+
+getIdByName.put(mobile9.getName(), mobile9.getId()); 
+
+FognodeFactors mobile10= createFogDevice("mobile10", 3200, 1000, 10000, 270, 2, 0, 87.53, 82.44); 
+
+mobile10.setParentId(getIdByName.get("Fogserver-5")); 
+
+mobile10.setUplinkLatency(7);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile10); 
+
+getIdByName.put(mobile10.getName(), mobile10.getId()); 
+
+FognodeFactors mobile11= createFogDevice("mobile11", 4200, 2000, 12000, 270, 2, 0, 87.53, 82.44); 
+
+mobile11.setParentId(getIdByName.get("Fogserver-1")); 
+
+mobile11.setUplinkLatency(8);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile11); 
+
+getIdByName.put(mobile11.getName(), mobile11.getId()); 
+
+FognodeFactors mobile12= createFogDevice("mobile12", 3300, 1070, 10500, 270, 2, 0, 57.53, 52.44); 
+
+mobile12.setParentId(getIdByName.get("Fogserver-1")); 
+
+mobile12.setUplinkLatency(10);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile12); 
+
+getIdByName.put(mobile12.getName(), mobile12.getId()); 
+
+FognodeFactors mobile13= createFogDevice("mobile13", 2900, 1100, 12000, 300, 2, 0, 87.53, 82.44); 
+
+mobile13.setParentId(getIdByName.get("Fogserver-3")); 
+
+mobile13.setUplinkLatency(15);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile13); 
+
+getIdByName.put(mobile13.getName(), mobile13.getId()); 
+
+FognodeFactors mobile14= createFogDevice("mobile14", 3200, 1000, 10000, 270, 2, 0, 87.53, 82.44); 
+
+mobile14.setParentId(getIdByName.get("Fogserver-4")); 
+
+mobile14.setUplinkLatency(17);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile14); 
+
+getIdByName.put(mobile14.getName(), mobile14.getId()); 
+
+FognodeFactors mobile15= createFogDevice("mobile15", 3200, 1000, 10000, 270, 2, 0, 87.53, 82.44); 
+
+mobile15.setParentId(getIdByName.get("Fogserver-5")); 
+
+mobile15.setUplinkLatency(18);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile15); 
+
+getIdByName.put(mobile15.getName(), mobile15.getId()); 
+
+FognodeFactors mobile16= createFogDevice("mobile16", 2800, 800, 12000, 340, 2, 0, 67.53, 87.44); 
+
+mobile16.setParentId(getIdByName.get("Fogserver-4")); 
+
+mobile16.setUplinkLatency(10);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile16); 
+
+getIdByName.put(mobile16.getName(), mobile16.getId()); 
+
+FognodeFactors mobile17= createFogDevice("mobile17", 3200, 1000, 10000, 270, 2, 0, 87.53, 82.44); 
+
+mobile17.setParentId(getIdByName.get("Fogserver-2")); 
+
+mobile17.setUplinkLatency(5);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile17); 
+
+getIdByName.put(mobile17.getName(), mobile17.getId()); 
+
+FognodeFactors mobile18= createFogDevice("mobile18", 1200, 900, 12000, 890, 2, 0, 99.53, 34.44); 
+
+mobile18.setParentId(getIdByName.get("Fogserver-4")); 
+
+mobile18.setUplinkLatency(3);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile18); 
+
+getIdByName.put(mobile18.getName(), mobile18.getId()); 
+
+FognodeFactors mobile19= createFogDevice("mobile19", 3900, 1260, 9000, 450, 2, 0, 37.53, 99.44); 
+
+mobile19.setParentId(getIdByName.get("Fogserver-5")); 
+
+mobile19.setUplinkLatency(7);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile19); 
+
+getIdByName.put(mobile19.getName(), mobile19.getId()); 
+
+FognodeFactors mobile20= createFogDevice("mobile20", 4200, 2000, 13500, 770, 2, 0, 82.53, 66.44); 
+
+mobile20.setParentId(getIdByName.get("Fogserver-5")); 
+
+mobile20.setUplinkLatency(5);  //latency occurred while connecting fog server and mobile 
+
+fogDevices.add(mobile20); 
+
+getIdByName.put(mobile20.getName(), mobile20.getId()); 
+
+// create ecg sensor and actuator 
+
+Sensor sensor = new Sensor("sensor1", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator = new Actuator("actuator1", userId, appId, "IoTActuator"); 
+
+sensor.setGatewayDeviceId(mobile.getId());   
+
+sensor.setLatency(6.0);  // latency of connection between ECG sensors and the parent Smartphone is 6 ms 
+
+actuator.setGatewayDeviceId(mobile.getId());   
+
+actuator.setLatency(1.0);  // latency of connection between Display actuator and the parent Smartphone is 1 ms 
+
+sensors.add(sensor);   
+
+actuators.add(actuator);   
+
+Sensor sensor2 = new Sensor("sensor2", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator2 = new Actuator("actuator2", userId, appId, "IoTActuator"); 
+
+sensor2.setGatewayDeviceId(mobile2.getId());   
+
+sensor2.setLatency(5.0);  // latency of connection between ECG sensors and the parent Smartphone is 5 ms 
+
+actuator2.setGatewayDeviceId(mobile2.getId());   
+
+actuator2.setLatency(2.0);  // latency of connection between Display actuator and the parent Smartphone is 2 ms 
+
+sensors.add(sensor2);   
+
+actuators.add(actuator2);   
+
+Sensor sensor3 = new Sensor("sensor3", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator3 = new Actuator("actuator3", userId, appId, "IoTActuator"); 
+
+sensor3.setGatewayDeviceId(mobile3.getId());   
+
+sensor3.setLatency(3.0);  // latency of connection between ECG sensors and the parent Smartphone is 3 ms 
+
+actuator3.setGatewayDeviceId(mobile3.getId());   
+
+actuator3.setLatency(2.0);  // latency of connection between Display actuator and the parent Smartphone is 2 ms 
+
+sensors.add(sensor3);   
+
+actuators.add(actuator3);   
+
+Sensor sensor4 = new Sensor("sensor4", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator4 = new Actuator("actuator4", userId, appId, "IoTActuator"); 
+
+sensor4.setGatewayDeviceId(mobile4.getId());   
+
+sensor4.setLatency(9.0);  // latency of connection between ECG sensors and the parent Smartphone is 9 ms 
+
+actuator4.setGatewayDeviceId(mobile4.getId());   
+
+actuator4.setLatency(5.0);  // latency of connection between Display actuator and the parent Smartphone is 5 ms 
+
+sensors.add(sensor4);   
+
+actuators.add(actuator4);   
+
+Sensor sensor5 = new Sensor("sensor5", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator5 = new Actuator("actuator5", userId, appId, "IoTActuator"); 
+
+sensor5.setGatewayDeviceId(mobile5.getId());   
+
+sensor5.setLatency(5.0);  // latency of connection between ECG sensors and the parent Smartphone is 5 ms 
+
+actuator5.setGatewayDeviceId(mobile5.getId());   
+
+actuator5.setLatency(3.0);  // latency of connection between Display actuator and the parent Smartphone is 3 ms 
+
+sensors.add(sensor5);   
+
+actuators.add(actuator5);   
+
+Sensor sensor6 = new Sensor("sensor6", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator6 = new Actuator("actuator6", userId, appId, "IoTActuator"); 
+
+sensor6.setGatewayDeviceId(mobile6.getId());   
+
+sensor6.setLatency(3.5);  // latency of connection between ECG sensors and the parent Smartphone is 3.5 ms 
+
+actuator6.setGatewayDeviceId(mobile6.getId());   
+
+actuator6.setLatency(1.5);  // latency of connection between Display actuator and the parent Smartphone is 1.5 ms 
+
+sensors.add(sensor6);   
+
+actuators.add(actuator6);   
+
+Sensor sensor7 = new Sensor("sensor7", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator7 = new Actuator("actuator7", userId, appId, "IoTActuator"); 
+
+sensor7.setGatewayDeviceId(mobile7.getId());   
+
+sensor7.setLatency(5.5);  // latency of connection between ECG sensors and the parent Smartphone is 5.5 ms 
+
+actuator7.setGatewayDeviceId(mobile7.getId());   
+
+actuator7.setLatency(7.5);  // latency of connection between Display actuator and the parent Smartphone is 7.5 ms 
+
+sensors.add(sensor7);   
+
+actuators.add(actuator7);   
+
+Sensor sensor8 = new Sensor("sensor8", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator8 = new Actuator("actuator8", userId, appId, "IoTActuator"); 
+
+sensor8.setGatewayDeviceId(mobile8.getId());   
+
+sensor8.setLatency(3.2);  // latency of connection between ECG sensors and the parent Smartphone is 3.2 ms 
+
+actuator8.setGatewayDeviceId(mobile8.getId());   
+
+actuator8.setLatency(2.9);  // latency of connection between Display actuator and the parent Smartphone is 2.9 ms 
+
+sensors.add(sensor8);   
+
+actuators.add(actuator8);   
+
+Sensor sensor9 = new Sensor("sensor9", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator9 = new Actuator("actuator9", userId, appId, "IoTActuator"); 
+
+sensor9.setGatewayDeviceId(mobile9.getId());   
+
+sensor9.setLatency(9.0);  // latency of connection between ECG sensors and the parent Smartphone is 9 ms 
+
+actuator9.setGatewayDeviceId(mobile9.getId());   
+
+actuator9.setLatency(5.0);  // latency of connection between Display actuator and the parent Smartphone is 5 ms 
+
+sensors.add(sensor9);   
+
+actuators.add(actuator9);   
+
+Sensor sensor10 = new Sensor("sensor10", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator10 = new Actuator("actuator10", userId, appId, "IoTActuator"); 
+
+sensor10.setGatewayDeviceId(mobile10.getId());   
+
+sensor10.setLatency(5.0);  // latency of connection between ECG sensors and the parent Smartphone is 5 ms 
+
+actuator10.setGatewayDeviceId(mobile10.getId());   
+
+actuator10.setLatency(3.0);  // latency of connection between Display actuator and the parent Smartphone is 3 ms 
+
+sensors.add(sensor10);   
+
+actuators.add(actuator10); 
+
+Sensor sensor11 = new Sensor("sensor11", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator11 = new Actuator("actuator11", userId, appId, "IoTActuator"); 
+
+sensor11.setGatewayDeviceId(mobile11.getId());   
+
+sensor11.setLatency(8.5);  // latency of connection between ECG sensors and the parent Smartphone is 8.5 ms 
+
+actuator11.setGatewayDeviceId(mobile11.getId());   
+
+actuator11.setLatency(7.5);  // latency of connection between Display actuator and the parent Smartphone is 7.5 ms 
+
+sensors.add(sensor11);   
+
+actuators.add(actuator11);   
+
+Sensor sensor12 = new Sensor("sensor12", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator12 = new Actuator("actuator12", userId, appId, "IoTActuator"); 
+
+sensor12.setGatewayDeviceId(mobile12.getId());   
+
+sensor12.setLatency(5.5);  // latency of connection between ECG sensors and the parent Smartphone is 5.5 ms 
+
+actuator12.setGatewayDeviceId(mobile12.getId());   
+
+actuator12.setLatency(7.5);  // latency of connection between Display actuator and the parent Smartphone is 7.5 ms 
+
+sensors.add(sensor12);   
+
+actuators.add(actuator12);   
+
+Sensor sensor13 = new Sensor("sensor13", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator13 = new Actuator("actuator13", userId, appId, "IoTActuator"); 
+
+sensor13.setGatewayDeviceId(mobile13.getId());   
+
+sensor13.setLatency(1.2);  // latency of connection between ECG sensors and the parent Smartphone is 1.2 ms 
+
+actuator13.setGatewayDeviceId(mobile13.getId());   
+
+actuator13.setLatency(1.9);  // latency of connection between Display actuator and the parent Smartphone is 1.9 ms 
+
+sensors.add(sensor13);   
+
+actuators.add(actuator13);   
+
+Sensor sensor14 = new Sensor("sensor14", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator14 = new Actuator("actuator14", userId, appId, "IoTActuator"); 
+
+sensor14.setGatewayDeviceId(mobile14.getId());   
+
+sensor14.setLatency(6.0);  // latency of connection between ECG sensors and the parent Smartphone is 6 ms 
+
+actuator14.setGatewayDeviceId(mobile14.getId());   
+
+actuator14.setLatency(5.0);  // latency of connection between Display actuator and the parent Smartphone is 5 ms 
+
+sensors.add(sensor14);   
+
+actuators.add(actuator14);   
+
+Sensor sensor15 = new Sensor("sensor15", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator15 = new Actuator("actuator15", userId, appId, "IoTActuator"); 
+
+sensor15.setGatewayDeviceId(mobile15.getId());   
+
+sensor15.setLatency(5.0);  // latency of connection between ECG sensors and the parent Smartphone is 5 ms 
+
+actuator15.setGatewayDeviceId(mobile15.getId());   
+
+actuator15.setLatency(3.0);  // latency of connection between Display actuator and the parent Smartphone is 3 ms 
+
+sensors.add(sensor15);   
+
+actuators.add(actuator15); 
+
+Sensor sensor16 = new Sensor("sensor16", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator16 = new Actuator("actuator16", userId, appId, "IoTActuator"); 
+
+sensor16.setGatewayDeviceId(mobile16.getId());   
+
+sensor16.setLatency(3.5);  // latency of connection between ECG sensors and the parent Smartphone is 3.5 ms 
+
+actuator16.setGatewayDeviceId(mobile16.getId());   
+
+actuator16.setLatency(2.5);  // latency of connection between Display actuator and the parent Smartphone is 2.5 ms 
+
+sensors.add(sensor16);   
+
+actuators.add(actuator16);   
+
+Sensor sensor17 = new Sensor("sensor17", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator17 = new Actuator("actuator17", userId, appId, "IoTActuator"); 
+
+sensor17.setGatewayDeviceId(mobile17.getId());   
+
+sensor17.setLatency(1.5);  // latency of connection between ECG sensors and the parent Smartphone is 1.5 ms 
+
+actuator17.setGatewayDeviceId(mobile17.getId());   
+
+actuator17.setLatency(3.5);  // latency of connection between Display actuator and the parent Smartphone is 3.5 ms 
+
+sensors.add(sensor17);   
+
+actuators.add(actuator17);   
+
+Sensor sensor18 = new Sensor("sensor18", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator18 = new Actuator("actuator18", userId, appId, "IoTActuator"); 
+
+sensor18.setGatewayDeviceId(mobile18.getId());   
+
+sensor18.setLatency(0.2);  // latency of connection between ECG sensors and the parent Smartphone is 0.2 ms 
+
+actuator18.setGatewayDeviceId(mobile18.getId());   
+
+actuator18.setLatency(5.9);  // latency of connection between Display actuator and the parent Smartphone is 5.9 ms 
+
+sensors.add(sensor18);   
+
+actuators.add(actuator18);   
+
+Sensor sensor19 = new Sensor("sensor19", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator19 = new Actuator("actuator19", userId, appId, "IoTActuator"); 
+
+sensor19.setGatewayDeviceId(mobile19.getId());   
+
+sensor19.setLatency(6.1); // latency of connection between ECG sensors and the parent Smartphone is 6.1 ms 
+
+actuator19.setGatewayDeviceId(mobile19.getId());   
+
+actuator19.setLatency(5.9);  // latency of connection between Display actuator and the parent Smartphone is 5.9 ms 
+
+sensors.add(sensor19);   
+
+actuators.add(actuator19);   
+
+Sensor sensor20 = new Sensor("sensor20", "IoTSensor", userId, appId, new DeterministicDistribution(sensingInterval)); // inter-transmission time of ECG sensor follows a deterministic distribution   
+
+Actuator actuator20 = new Actuator("actuator20", userId, appId, "IoTActuator"); 
+
+sensor20.setGatewayDeviceId(mobile20.getId());   
+
+sensor20.setLatency(1.0);  // latency of connection between ECG sensors and the parent Smartphone is 1.0 ms 
+
+actuator20.setGatewayDeviceId(mobile20.getId());   
+
+actuator20.setLatency(2.0);  // latency of connection between Display actuator and the parent Smartphone is 2.0 ms 
+
+sensors.add(sensor20);   
+
+actuators.add(actuator20);} 
+
+private static FognodeFactors createFogDevice(String nodeName, long mips, 
+
+int ram, long upBw, long downBw, int level, double ratePerMips, double busyPower, double idlePower) { 
+
+List<Pe> peList = new ArrayList<Pe>(); 
+
+peList.add(new Pe(0, new PeProvisionerOverbooking(mips))); 
+
+int hostId = FogUtils.generateEntityId();// host id 
+
+long storage = 1000000;//host storage 
+
+int bw = 10000;//host bandwidth 
+
+PowerHost host = new PowerHost( 
+
+hostId, 
+
+new RamProvisionerSimple(ram), 
+
+new BwProvisionerOverbooking(bw), 
+
+storage, 
+
+peList, 
+
+new StreamOperatorScheduler(peList), 
+
+new FogLinearPowerModel(busyPower, idlePower)); 
+
+List<Host> hostList = new ArrayList<Host>(); 
+
+hostList.add(host); 
+
+String arch = "x86"; // system architecture 
+
+String os = "Linux";// type of operating system  
+
+String vmm = "Xen";//virtual machine 
+
+double time_zone = 10.0; 
+
+double cost = 3.0; // cost for using the resource 
+
+double costPerMem = 0.05; // cost for using memory 
+
+double costPerStorage = 0.001;// cost for using storage 
+
+double costPerBw = 0.0; // cost per bandwidth 
+
+LinkedList<Storage> storageList = new LinkedList<Storage>(); 
+
+FogDeviceCharacteristics characteristics = new FogDeviceCharacteristics( 
+
+arch, os, vmm, host, time_zone, cost, costPerMem, 
+
+costPerStorage, costPerBw); 
+
+FognodeFactors fogdevice = null; 
+
+try { 
+
+fogdevice = new FognodeFactors(nodeName, characteristics, 
+
+new AppModuleAllocationPolicy(hostList), storageList, 10, upBw, downBw, 0, ratePerMips); 
+
+} catch (Exception e) { 
+
+e.printStackTrace();} 
+
+fogdevice.setLevel(level); 
+
+return fogdevice;} 
+
+@SuppressWarnings({"serial" }) 
+
+// Method to create health care application model 
+
+private static Application createApplication(String appId, int userId){//creating application models 
+
+Application application = Application.createApplication(appId, userId); 
+
+application.addAppModule("clientModule",10);  ) //creating client Module 
+
+application.addAppModule("mainModule", 50);  ) //creating main Module 
+
+application.addAppModule("storageModule", 10);  ) //creating storage Module 
+
+//Connecting the application modules (vertices) in the application model with edges 
+
+application.addAppEdge("IoTSensor", "clientModule", 100, 200, "IoTSensor", Tuple.UP, AppEdge.SENSOR);   
+
+application.addAppEdge("clientModule", "mainModule", 6000, 600  , "RawData", Tuple.UP, AppEdge.MODULE); 
+
+application.addAppEdge("mainModule", "storageModule", 1000, 300, "StoreData", Tuple.UP, AppEdge.MODULE); 
+
+application.addAppEdge("mainModule", "clientModule", 100, 50, "ResultData", Tuple.DOWN, AppEdge.MODULE); 
+
+application.addAppEdge("clientModule", "IoTActuator", 100, 50, "Response", Tuple.DOWN, AppEdge.ACTUATOR);   
+
+// defining the input-output relationships (represented by selectivity) of the application modules.  
+
+application.addTupleMapping("clientModule", "IoTSensor", "RawData", new FractionalSelectivity(1.0)); 
+
+application.addTupleMapping("mainModule", "RawData", "ResultData", new FractionalSelectivity(1.0)); 
+
+application.addTupleMapping("mainModule", "RawData", "StoreData", new FractionalSelectivity(1.0));   
+
+application.addTupleMapping("clientModule", "ResultData", "Response", new FractionalSelectivity(1.0)); 
+
+//Defining application loops (maybe incomplete loops) to monitor the latency  Here, we add one loop for //monitoring : IoTSensor -> clientModule -> mainModule à clientModule -> IOTActuator 
+
+   
+
+final AppLoop loop1 = new AppLoop(new ArrayList<String>(){{{add("IoTSensor");add("clientModule");add("mainModule");add("clientModule");add("IoTActuator");}}}); 
+
+List<AppLoop> loops = new ArrayList<AppLoop>(){{add(loop1);}}; 
+
+application.setLoops(loops); 
+
+return application;} 
+
+private static int randomGaussian(){ 
+
+Random r=new Random(); 
+
+return (int)Math.round(r.nextGaussian()*100+500); // mean of 0 and standard deviation 1} 
+
+private static void assignNPSValues(){// assigning NPS values randomly between 0 to 10 
+
+for(int i=0;i<20;i++){ 
+
+HashMap<Integer,ArrayList<Integer>> h; 
+
+int id=i+1,fog_id=1; 
+
+for(int j=1;j<=5;j++) {// for every service 
+
+h=new HashMap<Integer,ArrayList<Integer>>(); 
+
+ArrayList<Integer> arr; 
+
+arr=new ArrayList<Integer>(); 
+
+arr.add(randomGaussian()); // workload(resources) requested 
+
+arr.add(randomGaussian());  // workload production rate 
+
+h.put(new Integer(j+1),arr); 
+
+if(id==1||id==6||id==7||id==11|id==12)  
+
+fog_id=1; 
+
+else if(id==2||id==17)  
+
+fog_id=2; 
+
+else if(id==3||id==13||id==8)  
+
+fog_id=3; 
+
+else if(id==4||id==9||id==14||id==16|id==18)  
+
+fog_id=4; 
+
+else if(id==5||id==10||id==15||id==19|id==20)  
+
+fog_id=5; 
+
+customer_requests.put(new Integer(id),h); 
+
+HashMap<Integer,HashMap<Integer, ArrayList<Integer>>> hash=new HashMap<Integer,HashMap<Integer, ArrayList<Integer>>>(); 
+
+hash.put(new Integer(id),h); 
+
+fognodeRequestMapping.put("fogserver"+(fog_id),hash);}} 
+
+for(int i=0;i<5;i++){ 
+
+ArrayList<Integer> arr; 
+
+arr=new ArrayList<Integer>(); 
+
+arr.add(randomGaussian()); // workload capacity wc 
+
+arr.add(randomGaussian());  // wmax 
+
+fognodescapacity.put("fogserver"+(i+1),arr); 
+
+services.put(new Integer(i+1),getDoubleValue(0.0,10.0));} 
+
+//assigning NPS values for each customer  
+
+HashMap<Integer,Double> h; 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(1,5.0); 
+
+h.put(2,9.3); 
+
+customernps.put(1,h); 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(2,6.2); 
+
+h.put(3,4.1); 
+
+customernps.put(2,h); 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(3,5.5); 
+
+h.put(4,9.1); 
+
+customernps.put(3,h); 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(3,5.3); 
+
+h.put(4,999.0); 
+
+customernps.put(4,h); 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(2,5.0); 
+
+h.put(5,8.5); 
+
+customernps.put(5,h); 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(4,7.0); 
+
+h.put(3,8.3); 
+
+customernps.put(6,h); 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(1,4.2); 
+
+h.put(3,8.1); 
+
+customernps.put(7,h); 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(1,9.5); 
+
+h.put(4,9.1); 
+
+customernps.put(8,h); 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(2,5.3); 
+
+h.put(4,999.0); 
+
+customernps.put(9,h); 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(2,5.9); 
+
+h.put(5,8.5); 
+
+customernps.put(10,h); 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(1,7.0); 
+
+h.put(5,9.3); 
+
+customernps.put(11,h); 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(2,6.2); 
+
+h.put(5,999.0); 
+
+customernps.put(12,h); 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(2,4.5); 
+
+h.put(4,9.1); 
+
+customernps.put(13,h); 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(1,999.0); 
+
+h.put(4,999.0); 
+
+customernps.put(14,h); 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(2,5.9); 
+
+h.put(5,6.5); 
+
+customernps.put(15,h); 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(1,4.0); 
+
+h.put(2,9.3); 
+
+customernps.put(16,h); 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(2,4.2); 
+
+h.put(3,8.1); 
+
+customernps.put(17,h); 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(3,4.5); 
+
+h.put(4,9.1); 
+
+customernps.put(18,h); 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(3,5.3); 
+
+h.put(4,999.0); 
+
+customernps.put(19,h); 
+
+h=new HashMap<Integer,Double>(); 
+
+h.put(2,5.0); 
+
+h.put(5,999.0); 
+
+customernps.put(20,h);} 
+
+#NPS RATIO CALCULATION 
+
+private static HashMap<Integer,HashMap<Integer,Double>> npsRatiocalculations() {//calculating NPS //ratio using default NPS, overall NPS and NPS given by the customer for k number of occasions. 
+
+double npsDefault=7.5; 
+
+HashMap<Integer,HashMap<Integer,Double>> resultnpsratios=new HashMap<>();// customer id----->service id,nps ratio of that service 
+
+for(Map.Entry<Integer,HashMap<Integer,ArrayList<Integer>>> map:customer_requests.entrySet()) { 
+
+int key=(int) map.getKey();  // customer id 
+
+HashMap<Integer,ArrayList<Integer>> value=(HashMap)map.getValue(); 
+
+HashMap<Integer,Double> res=new HashMap<>(); 
+
+for(Map.Entry<Integer,ArrayList<Integer>> innermap:value.entrySet()){ 
+
+int innerkey=(int) innermap.getKey();  // service id 
+
+int innervalue=(int) innermap.getValue().get(0);  //requested resources 
+
+double overallNPS=(double)services.get(innerkey); 
+
+double customerNPS=(double)customernps.get(key).get(innerkey); 
+
+if(Double.compare(customerNPS,999.0)==0) { 
+
+// no previous history of that customer for that service 
+
+// follow case 1 for nps ratio calculation 
+
+res.put(innerkey,(double)npsDefault/overallNPS); 
+
+resultnpsratios.put(key,res);} 
+
+else { 
+
+// case 2 (overallNPS>defaultNPS of that service) 
+
+if(overallNPS>npsDefault){ 
+
+res.put(innerkey,(double)overallNPS/npsDefault); 
+
+resultnpsratios.put(key,res);} 
+
+// case 3 (overallNPS>customer's NPS for that service) 
+
+else if(overallNPS>customerNPS){ 
+
+res.put(innerkey,(double)overallNPS/customerNPS); 
+
+resultnpsratios.put(key,res);} 
+
+// case 4 (customer's NPS for that service>overallNPS) 
+
+else if(customerNPS>overallNPS){ 
+
+res.put(innerkey,(double)customerNPS/overallNPS); 
+
+resultnpsratios.put(key,res);}}}} 
+
+return resultnpsratios;} 
+
+#QOE RATIO ESTIMATION ALGORITHM 
+
+private static void QOERatioEstimationalgm(){ 
+
+int i=0; 
+
+for(Map.Entry<Integer,HashMap<Integer,ArrayList<Integer>>> map:customer_requests.entrySet()){ 
+
+i++; 
+
+int key=(int) map.getKey();  // customer id 
+
+HashMap<Integer,Double> custnps=customernps.get(key); 
+
+HashMap<Integer,ArrayList<Integer>> value=(HashMap)map.getValue(); 
+
+for(Map.Entry<Integer,ArrayList<Integer>> innermap:value.entrySet()){ 
+
+int innerkey=(int) innermap.getKey();  // service id 
+
+Double custnpsValue=custnps.getOrDefault(innerkey,9999.0); 
+
+if(Double.compare(custnpsValue,9999.0)==0) { 
+
+continue;} 
+
+int wi=(int) innermap.getValue().get(0);  //requested resources 
+
+int lambda;//=(int) innermap.getValue().get(1); 
+
+int j=1,wc,wmax,flag=0; 
+
+HashMap<Integer,HashMap<Integer, ArrayList<Integer>>> hashmap=null; 
+
+while(true){ 
+
+lambda=0; 
+
+hashmap=fognodeRequestMapping.get("fogserver"+j); 
+
+ArrayList<Integer> arr=fognodescapacity.get("fogserver"+j); 
+
+wc=arr.get(0); 
+
+wmax=arr.get(1); 
+
+for(Map.Entry<Integer,HashMap<Integer, ArrayList<Integer>>> innermostmap:hashmap.entrySet()){ 
+
+HashMap<Integer, ArrayList<Integer>> h=innermostmap.getValue(); 
+
+for(Map.Entry<Integer, ArrayList<Integer>> m:h.entrySet()){ 
+
+ArrayList<Integer> ar=m.getValue(); 
+
+lambda+=ar.get(1);}} 
+
+j++; 
+
+if(wi>0.5*wmax) {// customer requested resource is greater than half the size of the fog node 
+
+flag=1; 
+
+wi-=(0.5*wmax); 
+
+arr.add(1,new Integer(Math.round((float)(wmax-0.5*wmax)))); 
+
+fognodescapacity.put("fogserver"+(j-1),arr); 
+
+System.out.println("customer id "+key+" "); 
+
+System.out.println("service id "+innerkey); 
+
+System.out.println("workload "+wi); 
+
+System.out.println("request connected to fogserver"+(j-1)); 
+
+System.out.println(); 
+
+System.out.println("-----------------------------------------------------"); 
+
+continue; 
+
+}if(j>5){ 
+
+break;} 
+
+if(flag==0) { 
+
+break;} 
+
+if((lambda>wc)&&(wi>wmax)) { 
+
+break;}} 
+
+if(Double.compare(custnpsValue,999.0)==0){ 
+
+// customer is new 
+
+System.out.println("customer is new"); 
+
+if(services.get(innerkey)>7.5){ 
+
+System.out.println(" overall service nps  ");} 
+
+else{ 
+
+System.out.println(" default nps ");}} 
+
+else{ 
+
+// customer already exists 
+
+System.out.println("customer already exists"); 
+
+if(custnpsValue>services.get(innerkey)){ 
+
+System.out.println(" overall customer nps  ");} 
+
+else{ 
+
+System.out.println(" overall service nps  ");}} 
+
+System.out.println("customer id "+key+" "); 
+
+System.out.println("service id "+innerkey); 
+
+System.out.println("workload "+wi); 
+
+System.out.println("request connected to fogserver"+(j-1)); 
+
+System.out.println(); 
+
+System.out.println("----------------------------------------------------------------------------------------------------------------------"); }}}}  
+
