@@ -1,0 +1,109 @@
+fognodefactors class 
+
+package org.fog.test.perfeval; 
+
+#PACKAGE FOR JAVA  
+
+import java.util.ArrayList; 
+
+import java.util.List; 
+
+import java.util.Map; 
+
+import java.util.TreeMap; 
+
+#PACKAGE FOR CLOUDSIM 
+
+import org.cloudbus.cloudsim.Storage; 
+
+import org.cloudbus.cloudsim.VmAllocationPolicy; 
+
+#PACKAGE FOR FOGSIM 
+
+import org.fog.entities.FogDevice; 
+
+import org.fog.entities.FogDeviceCharacteristics; 
+
+public class FognodeFactors extends FogDevice { 
+
+double delay,jitter,latency,pktloss,blockingprobability; 
+
+public FognodeFactors(){} 
+
+public FognodeFactors(double delay,double jitter,double latency,double pktloss,double blockingprobability){ 
+
+super(); 
+
+this.blockingprobability=blockingprobability; 
+
+this.delay=delay; 
+
+this.jitter=jitter; 
+
+this.latency=latency; 
+
+this.pktloss=pktloss;	 
+
+} // This constructor is for storing the factors of fog node such as delay, jitter, latency, packetloss, blocking probability. 
+
+public FognodeFactors(String name,  
+
+FogDeviceCharacteristics characteristics, 
+
+VmAllocationPolicy vmAllocationPolicy, 
+
+List<Storage> storageList, 
+
+double schedulingInterval, 
+
+double uplinkBandwidth, double downlinkBandwidth, double uplinkLatency, double ratePerMips) throws Exception { 
+
+super(name, characteristics, vmAllocationPolicy, storageList, schedulingInterval,uplinkBandwidth,downlinkBandwidth,uplinkLatency,ratePerMips);} 
+
+//rank calculation method calculates the score for each fog and arranges from minimum to maximum 
+
+public static int[] rank(int len, double[]input) { 
+
+    int temprank[]=new int[len]; 
+
+    int rankk[]=new int[len]; 
+
+    Map<Double, double[]> map = new TreeMap<>((a, b) -> b.compareTo(a)); 
+
+    for (int i = 0; i < len; i++) { 
+
+        double key = input[i]; 
+
+        double[] arr; 
+
+        if ((arr = map.get(key)) == null) 
+
+            arr = new double[]{i, 0}; 
+
+        arr[1]++; 
+
+        map.put(key, arr);} 
+
+    ArrayList<String> ranking=new ArrayList<>(); 
+
+    double[][] groups = map.values().toArray(new double[map.size()][]); 
+
+    for (int i = 0, rank = 0; i < len; i++) { 
+
+        if (rank < groups.length && i == groups[rank][0]) 
+
+            rank++; 
+
+        temprank[i]=rank;} 
+
+    for(int i=len-1;i>=0;i--){ 
+
+    int max=temprank[len-1] +1; 
+
+       ranking.add(max-temprank[i]+" "+input[i]); 
+
+       rankk[i]=max-temprank[i];} 
+
+       return rankk;}} 
+
+ 
